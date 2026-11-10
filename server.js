@@ -1,125 +1,386 @@
 
--- ==========================================
--- BANCO DE DADOS: LISTA DE TAREFAS
--- ==========================================
+import express from "express";
+import cors from "cors";
+import dotenv from "dotenv";
+import { createClient } from "@supabase/supabase-js";
 
--- 1. CRIAR TABELA
+dotenv.config();
 
-CREATE TABLE IF NOT EXISTS public.tarefas (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+// ==========================================
+// CONFIGURAÇÕES
+// ==========================================
 
-    titulo VARCHAR(255) NOT NULL,
+const app = express();
 
-    descricao TEXT,
+app.use(express.json());
 
-    concluida BOOLEAN NOT NULL DEFAULT FALSE,
+const allowedOrigins = process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(",").map(origin => origin.trim())
+    : ["*"];
 
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+app.use(cors({
+    origin: (origin, callback) => {
+        if (
+            allowedOrigins.includes("*") ||
+            !origin ||
+            allowedOrigins.includes(origin)
+        ) {
+            return callback(null, true);
+        }
+
+        return callback(new Error("Origem não autorizada pelo CORS"));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
+// ==========================================
+// CONEXÃO COM SUPABASE
+// ==========================================
+
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) {
+    throw new Error("Configure SUPABASE_URL e SUPABASE_KEY.");
+}
+
+const supabase = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_KEY
 );
 
+// ==========================================
+// ROTA PRINCIPAL
+// ==========================================
 
--- ==========================================
--- 2. HABILITAR SEGURANÇA RLS
--- ==========================================
+app.get("/", (req, res) => {
+    res.status(200).json({
+        mensagem: "API de Lista de Tarefas funcionando!",
+        status: "online",
+        tecnologia: "Node.js + Express + Supabase"
+    });
+});
 
-ALTER TABLE public.tarefas
-ENABLE ROW LEVEL SECURITY;
+// ==========================================
+// READ - LISTAR TODAS AS TAREFAS
+// GET /api/tarefas
+// ==========================================
 
+app.get("/api/tarefas", async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from("tarefas")
+            .select("*")
+            .order("created_at", { ascending: false });
 
--- ==========================================
--- 3. PERMISSÕES PARA USUÁRIO ANÔNIMO
--- ==========================================
+        if (error) throw error;
 
-GRANT USAGE ON SCHEMA public TO anon;
+        return res.status(200).json(data);
 
-GRANT SELECT, INSERT, UPDATE, DELETE
-ON public.tarefas
-TO anon;
+    } catch (error) {
+        console.error("Erro ao listar:", error.message);
 
+        return res.status(500).json({
+            erro: "Não foi possível listar as tarefas."
+        });
+    }
+});
 
--- ==========================================
--- 4. REMOVER POLÍTICAS ANTIGAS
--- (PERMITE EXECUTAR O SCRIPT NOVAMENTE)
--- ==========================================
+// ==========================================
+// READ - BUSCAR TAREFA POR ID
+// GET /api/tarefas/:id
+// ==========================================
 
-DROP POLICY IF EXISTS "Permitir listar tarefas"
-ON public.tarefas;
+app.get("/api/tarefas/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
 
-DROP POLICY IF EXISTS "Permitir cadastrar tarefas"
-ON public.tarefas;
+        const { data, error } = await supabase
+            .from("tarefas")
+            .select("*")
+            .eq("id", id)
+            .maybeSingle();
 
-DROP POLICY IF EXISTS "Permitir editar tarefas"
-ON public.tarefas;
+        if (error) throw error;
 
-DROP POLICY IF EXISTS "Permitir excluir tarefas"
-ON public.tarefas;
+        if (!data) {
+            return res.status(404).json({
+                erro: "Tarefa não encontrada."
+            });
+        }
 
+        return res.status(200).json(data);
 
--- ==========================================
--- 5. CREATE - CADASTRAR
--- ==========================================
+    } catch (error) {
+        console.error("Erro ao buscar:", error.message);
 
-CREATE POLICY "Permitir cadastrar tarefas"
+        return res.status(500).json({
+            erro: "Não foi possível buscar a tarefa."
+        });
+    }
+});
 
-ON public.tarefas
+// ==========================================
+// CREATE - CADASTRAR TAREFA
+// POST /api/tarefas
+// ==========================================
 
-FOR INSERT
+app.post("/api/tarefas", async (req, res) => {
+    try {
+        const { titulo, descricao } = req.body;
 
-TO anon
+        if (
+            typeof titulo !== "string" ||
+            !titulo.trim()
+        ) {
+            return res.status(400).json({
+                erro: "O título da tarefa é obrigatório."
+            });
+        }
 
-WITH CHECK (true);
+        if (
+            descricao !== undefined &&
+            descricao !== null &&
+            typeof descricao !== "string"
+        ) {
+            return res.status(400).json({
+                erro: "A descrição deve ser um texto."
+            });
+        }
 
+        const { data, error } = await supabase
+            .from("tarefas")
+            .insert([{
+                titulo: titulo.trim(),
+                descricao: descricao?.trim() || null,
+                concluida: false
+            }])
+            .select()
+            .single();
 
--- ==========================================
--- 6. READ - CONSULTAR
--- ==========================================
+        if (error) throw error;
 
-CREATE POLICY "Permitir listar tarefas"
+        return res.status(201).json({
+            mensagem: "Tarefa cadastrada com sucesso!",
+            tarefa: data
+        });
 
-ON public.tarefas
+    } catch (error) {
+        console.error("Erro ao cadastrar:", error.message);
 
-FOR SELECT
+        return res.status(500).json({
+            erro: "Não foi possível cadastrar a tarefa."
+        });
+    }
+});
 
-TO anon
+// ==========================================
+// UPDATE - EDITAR TAREFA
+// PUT /api/tarefas/:id
+// ==========================================
 
-USING (true);
+app.put("/api/tarefas/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { titulo, descricao, concluida } = req.body;
 
+        const atualizacao = {};
 
--- ==========================================
--- 7. UPDATE - EDITAR
--- ==========================================
+        if (titulo !== undefined) {
+            if (
+                typeof titulo !== "string" ||
+                !titulo.trim()
+            ) {
+                return res.status(400).json({
+                    erro: "O título não pode estar vazio."
+                });
+            }
 
-CREATE POLICY "Permitir editar tarefas"
+            atualizacao.titulo = titulo.trim();
+        }
 
-ON public.tarefas
+        if (descricao !== undefined) {
+            if (
+                descricao !== null &&
+                typeof descricao !== "string"
+            ) {
+                return res.status(400).json({
+                    erro: "A descrição deve ser um texto."
+                });
+            }
 
-FOR UPDATE
+            atualizacao.descricao = descricao?.trim() || null;
+        }
 
-TO anon
+        if (concluida !== undefined) {
+            if (typeof concluida !== "boolean") {
+                return res.status(400).json({
+                    erro: "Concluída deve ser true ou false."
+                });
+            }
 
-USING (true)
+            atualizacao.concluida = concluida;
+        }
 
-WITH CHECK (true);
+        if (Object.keys(atualizacao).length === 0) {
+            return res.status(400).json({
+                erro: "Informe pelo menos um campo para atualizar."
+            });
+        }
 
+        const { data, error } = await supabase
+            .from("tarefas")
+            .update(atualizacao)
+            .eq("id", id)
+            .select()
+            .maybeSingle();
 
--- ==========================================
--- 8. DELETE - EXCLUIR
--- ==========================================
+        if (error) throw error;
 
-CREATE POLICY "Permitir excluir tarefas"
+        if (!data) {
+            return res.status(404).json({
+                erro: "Tarefa não encontrada."
+            });
+        }
 
-ON public.tarefas
+        return res.status(200).json({
+            mensagem: "Tarefa atualizada com sucesso!",
+            tarefa: data
+        });
 
-FOR DELETE
+    } catch (error) {
+        console.error("Erro ao atualizar:", error.message);
 
-TO anon
+        return res.status(500).json({
+            erro: "Não foi possível atualizar a tarefa."
+        });
+    }
+});
 
-USING (true);
+// ==========================================
+// PATCH - ALTERNAR CONCLUSÃO
+// PATCH /api/tarefas/:id/concluir
+// ==========================================
 
+app.patch("/api/tarefas/:id/concluir", async (req, res) => {
+    try {
+        const { id } = req.params;
 
--- ==========================================
--- 9. TESTAR TABELA
--- ==========================================
+        const { data: tarefa, error: buscaErro } = await supabase
+            .from("tarefas")
+            .select("concluida")
+            .eq("id", id)
+            .maybeSingle();
 
-SELECT * FROM public.tarefas;
+        if (buscaErro) throw buscaErro;
 
+        if (!tarefa) {
+            return res.status(404).json({
+                erro: "Tarefa não encontrada."
+            });
+        }
+
+        const { data, error } = await supabase
+            .from("tarefas")
+            .update({
+                concluida: !tarefa.concluida
+            })
+            .eq("id", id)
+            .select()
+            .single();
+
+        if (error) throw error;
+
+        return res.status(200).json({
+            mensagem: "Status alterado com sucesso!",
+            tarefa: data
+        });
+
+    } catch (error) {
+        console.error("Erro ao concluir:", error.message);
+
+        return res.status(500).json({
+            erro: "Não foi possível alterar o status."
+        });
+    }
+});
+
+// ==========================================
+// DELETE - EXCLUIR TAREFA
+// DELETE /api/tarefas/:id
+// ==========================================
+
+app.delete("/api/tarefas/:id", async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const { data, error } = await supabase
+            .from("tarefas")
+            .delete()
+            .eq("id", id)
+            .select("id")
+            .maybeSingle();
+
+        if (error) throw error;
+
+        if (!data) {
+            return res.status(404).json({
+                erro: "Tarefa não encontrada."
+            });
+        }
+
+        return res.status(200).json({
+            mensagem: "Tarefa excluída com sucesso!"
+        });
+
+    } catch (error) {
+        console.error("Erro ao excluir:", error.message);
+
+        return res.status(500).json({
+            erro: "Não foi possível excluir a tarefa."
+        });
+    }
+});
+
+// ==========================================
+// TRATAMENTO DE ROTAS INEXISTENTES
+// ==========================================
+
+app.use((req, res) => {
+    res.status(404).json({
+        erro: "Rota não encontrada."
+    });
+});
+
+// ==========================================
+// TRATAMENTO DE ERROS
+// ==========================================
+
+app.use((error, req, res, next) => {
+    console.error("Erro interno:", error.message);
+
+    res.status(500).json({
+        erro: "Erro interno no servidor."
+    });
+});
+
+// ==========================================
+// EXPORTAÇÃO PARA VERCEL
+// ==========================================
+
+export default app;
+
+// ==========================================
+// EXECUÇÃO LOCAL
+// ==========================================
+
+if (!process.env.VERCEL) {
+    const PORT = process.env.PORT || 3000;
+
+    app.listen(PORT, () => {
+        console.log("----------------------------------");
+        console.log(" API DE LISTA DE TAREFAS");
+        console.log("----------------------------------");
+        console.log(` Servidor: http://localhost:${PORT}`);
+        console.log(` Tarefas: http://localhost:${PORT}/api/tarefas`);
+        console.log("----------------------------------");
+    });
+}
